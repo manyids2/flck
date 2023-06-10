@@ -21,5 +21,8 @@ build = {
 	type = "builtin",
 	modules = {
 		flck = "flck.lua",
+		kitty = {
+			sources = { "kitty/kitty.c" },
+		},
 	},
 }
