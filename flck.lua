@@ -1,5 +1,3 @@
-local b64 = require("external.base64")
-local inspect = require("inspect")
 local class = require("middleclass")
 local Cairo = require("oocairo")
 local ffi = require("ffi")
@@ -7,12 +5,12 @@ local ffi = require("ffi")
 ffi.cdef([[
 
 typedef struct line {
-  size_t r;
+  int r;
   char buf[256];
 } line;
 typedef struct kdata {
   int iid;
-  size_t offset;
+  int offset;
   struct line data;
 } kdata;
 typedef struct pos {
@@ -33,8 +31,8 @@ void kitty_clear_screen(int lh);
 line kitty_recv_term(int timeout);
 kdata kitty_parse_response(line l);
 
-size_t kitty_send_rgba(int id, const char *color_pixels,
-                       int width, int height);
+int kitty_send_rgba(int id, const char *color_pixels,
+                       int width, int height, int compression);
 
 ]])
 
@@ -44,47 +42,70 @@ local Flck = class("Flck") -- 'Flck' is the class' name
 
 function Flck:initialize()
 	local size = kitty.kitty_get_size()
-	self.millis = 1000
+	self.millis = 10
 	self.xpixel = size.xpixel
 	self.ypixel = size.ypixel
 	self.row = size.row
 	self.col = size.col
 	self.keystroke = nil
 	self.pos = { x = 0, y = 0 }
+	self.colors = {
+		w = { r = 0, b = 0, g = 0 },
+		a = { r = 1, b = 0, g = 0 },
+		s = { r = 0, b = 1, g = 0 },
+		d = { r = 0, b = 0, g = 1 },
+	}
+	self.now = "w"
 	self.dirty = true
 	self.exit = false
 	self.im_id = 1
+	self.compression = 0
+
+	-- surface and context
+	self.surface = Cairo.image_surface_create("argb32", self.xpixel, self.ypixel)
+	self.cr = Cairo.context_create(self.surface)
 end
 
-function Flck:show_image(data)
+function Flck:show_image()
+	local data = self.surface:get_data()
 	local cdata = ffi.new("char[?]", string.len(data) + 1)
 	ffi.copy(cdata, data)
-	kitty.kitty_send_rgba(self.im_id, cdata, self.xpixel, self.ypixel)
+
+	kitty.kitty_set_position(0, 0)
+	kitty.kitty_send_rgba(self.im_id, cdata, self.xpixel, self.ypixel, self.compression)
+	kitty.kitty_set_position(0, 0)
 end
 
 function Flck:render()
 	if not self.dirty then
 		return
 	end
-	-- surface and context
-	local surface = Cairo.image_surface_create("rgb24", self.xpixel, self.ypixel)
-	local cr = Cairo.context_create(surface)
-
-	-- White background.
-	local grad = Cairo.pattern_create_linear(0, 0, self.xpixel, self.ypixel)
-	grad:add_color_stop_rgb(0, 1, 0, 0)
-	grad:add_color_stop_rgb(0.5, 0, 1, 0)
-	grad:add_color_stop_rgb(1, 0, 0, 1)
-	cr:set_source(grad)
+	local cr = self.cr
+	cr:set_source_rgb(0.8, 0.8, 0.8)
 	cr:paint()
 
-	local data = surface:get_data()
-	self:show_image(data)
+	local r, g, b
+	r = self.colors[self.now].r * 0.8
+	g = self.colors[self.now].g * 0.8
+	b = self.colors[self.now].b * 0.8
+
+	-- Gradient background.
+	-- local grad = Cairo.pattern_create_linear(0, 0, self.xpixel, self.ypixel)
+	local min = math.min(self.xpixel, self.ypixel)
+	local PI = 2 * math.asin(1)
+	local x, y, radius = self.xpixel / 2, self.ypixel / 2, (min / 2) - (min * 0.1)
+
+	cr:set_source_rgb(r, g, b)
+	cr:arc(x, y, radius, 0, PI * 2)
+	cr:fill()
+
+	self:show_image()
 
 	self.dirty = false
 end
 
 function Flck:mount()
+	kitty.kitty_clear_screen(self.row)
 	kitty.kitty_setup_termios()
 	kitty.kitty_hide_cursor()
 	self:poll_events()
@@ -103,13 +124,13 @@ function Flck:unmount()
 end
 
 function Flck:run()
-	for _ = 1, 10 do
+	for _ = 1, 1000 do
 		if self.exit then
 			break
 		end
 
-		self:render()
 		kitty.kitty_set_position(self.pos.x, self.pos.y - self.ypixel)
+		self:render()
 		self:poll_events()
 	end
 end
@@ -121,6 +142,18 @@ function Flck:poll_events()
 	local key = tostring(string.sub(buf, 1, 1))
 	if key == "q" then
 		self.exit = true
+	elseif key == "w" then
+		self.now = "w"
+		self.dirty = true
+	elseif key == "a" then
+		self.now = "a"
+		self.dirty = true
+	elseif key == "s" then
+		self.now = "s"
+		self.dirty = true
+	elseif key == "d" then
+		self.now = "d"
+		self.dirty = true
 	end
 end
 

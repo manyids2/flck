@@ -11,13 +11,52 @@
 #include <termios.h>
 #include <unistd.h>
 
+/* USING ZLIB */
+
+#include <zlib.h>
+
+typedef struct zlib_span {
+  const char *data;
+  int len;
+} zlib_span;
+
+zlib_span kitty_zlib_compress(const char *data, int len, uint32_t compression) {
+  zlib_span result = {NULL, 0};
+  z_stream s = {0};
+  char *xdata;
+  int xlen;
+  int ret;
+
+  deflateInit(&s, compression > 1 ? Z_BEST_COMPRESSION : Z_BEST_SPEED);
+  xlen = deflateBound(&s, len);
+  if (!(xdata = malloc(xlen))) {
+    return result;
+  }
+  s.avail_in = len;
+  s.next_in = (char *)data;
+  s.avail_out = xlen;
+  s.next_out = xdata;
+  do {
+    if (Z_STREAM_ERROR == (ret = deflate(&s, Z_FINISH))) {
+      free(xdata);
+      return result;
+    }
+  } while (s.avail_out == 0);
+  assert(s.avail_in == 0);
+  result.data = xdata;
+  result.len = s.total_out;
+  deflateEnd(&s);
+
+  return result;
+}
+
 struct line {
-  size_t r;
+  int r;
   char buf[256];
 };
 struct kdata {
   int iid;
-  size_t offset;
+  int offset;
   struct line data;
 };
 struct pos {
@@ -177,17 +216,16 @@ void kitty_restore_termios() {
   tcsetattr(0, TCSANOW, _get_termios_backup());
 }
 
-static const uint8_t base64enc_tab[] =
+const char base64enc_tab[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static int base64_encode(size_t in_len, const char *in, size_t out_len,
-                         char *out) {
+int base64_encode(int in_len, const char *in, int out_len, char *out) {
   uint ii, io;
   uint_least32_t v;
   uint rem;
 
   for (io = 0, ii = 0, v = 0, rem = 0; ii < in_len; ii++) {
-    uint8_t ch;
+    char ch;
     ch = in[ii];
     v = (v << 8) | ch;
     rem += 8;
@@ -215,25 +253,43 @@ static int base64_encode(size_t in_len, const char *in, size_t out_len,
   return io;
 }
 
-size_t kitty_send_rgba(int id, const char *color_pixels, int width,
-                       int height) {
-  const size_t chunk_limit = 4096;
+int kitty_send_rgba(int id, const char *color_pixels, int width, int height,
+                    int compression) {
+  const int chunk_limit = 4096;
+  const int pixel_limit = 1000000;
 
-  size_t pixel_count = width * height;
-  size_t total_size = pixel_count << 2;
-
+  int pixel_count = width * height;
+  int total_size = pixel_count << 2;
+  int encode_size;
   const char *encode_data;
-  size_t encode_size;
 
-  encode_data = color_pixels;
-  encode_size = total_size;
+  zlib_span z;
+  /* fprintf(stdout, "%d, %d, %d", pixel_count, encode_size, base64_size); */
 
-  size_t base64_size = ((encode_size + 2) / 3) * 4;
+  if (pixel_count > pixel_limit) {
+    fprintf(stdout, " RuntimeError > pixel_limit exceeded (%d > %d) \n",
+            pixel_count, pixel_limit);
+    fprintf(stdout, " Try resizing the terminal :( \n");
+    return -1;
+  }
+
+  if (compression) {
+    z = kitty_zlib_compress(color_pixels, total_size, compression);
+    if (!z.data)
+      return 0;
+    encode_data = z.data;
+    encode_size = z.len;
+  } else {
+    encode_data = color_pixels;
+    encode_size = total_size;
+  }
+
+  int base64_size = ((encode_size + 2) / 3) * 4;
   char *base64_pixels = (char *)alloca(base64_size + 1);
 
   /* base64 encode the data */
-  int ret = base64_encode(encode_size, encode_data, base64_size + 1,
-                          (char *)base64_pixels);
+  int ret =
+      base64_encode(encode_size, encode_data, base64_size + 1, base64_pixels);
   if (ret < 0) {
     fprintf(stderr, "error: base64_encode failed: ret=%d\n", ret);
     exit(1);
@@ -247,15 +303,21 @@ size_t kitty_send_rgba(int id, const char *color_pixels, int width,
    * <ESC>_Gm=0;<encoded pixel data last chunk><ESC>\
    */
 
-  size_t sent_bytes = 0;
+  int sent_bytes = 0;
   while (sent_bytes < base64_size) {
-    size_t chunk_size = base64_size - sent_bytes < chunk_limit
-                            ? base64_size - sent_bytes
-                            : chunk_limit;
+    int chunk_size = base64_size - sent_bytes < chunk_limit
+                         ? base64_size - sent_bytes
+                         : chunk_limit;
     int cont = !!(sent_bytes + chunk_size < base64_size);
     if (sent_bytes == 0) {
-      fprintf(stdout, "\x1B_Gf=32,a=%s,i=%u,s=%d,v=%d,m=%d%s;", "T", id, width,
-              height, cont, "");
+      // TODO: Make this properly
+      if (compression) {
+        fprintf(stdout, "\x1B_Gf=32,a=%s,i=%u,s=%d,v=%d,m=%d%s;", "T", id,
+                width, height, cont, ",o=z"); // Assuming we have zlib
+      } else {
+        fprintf(stdout, "\x1B_Gf=32,a=%s,i=%u,s=%d,v=%d,m=%d%s;", "T", id,
+                width, height, cont, ""); // no compression
+      }
     } else {
       fprintf(stdout, "\x1B_Gm=%d;", cont);
     }
@@ -264,6 +326,10 @@ size_t kitty_send_rgba(int id, const char *color_pixels, int width,
     sent_bytes += chunk_size;
   }
   fflush(stdout);
+
+  if (compression) {
+    free((void *)encode_data);
+  }
 
   return encode_size;
 }

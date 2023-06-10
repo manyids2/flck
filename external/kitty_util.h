@@ -22,6 +22,7 @@
 
 #include <alloca.h>
 #include <poll.h>
+#include <string.h>
 #include <termios.h>
 #include <unistd.h>
 
