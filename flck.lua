@@ -49,15 +49,15 @@ function Flck:initialize()
 	self.ypixel = size.ypixel
 	self.row = size.row
 	self.col = size.col
-	self.dirty = true
 	self.keystroke = nil
 	self.pos = { x = 0, y = 0 }
+	self.dirty = true
 	self.exit = false
 	self.im_id = 1
 end
 
 function Flck:show_image(data)
-	local cdata = ffi.new("char[?]", #data + 1)
+	local cdata = ffi.new("char[?]", string.len(data) + 1)
 	ffi.copy(cdata, data)
 	kitty.kitty_send_rgba(self.im_id, cdata, self.xpixel, self.ypixel)
 end
@@ -87,12 +87,12 @@ end
 function Flck:mount()
 	kitty.kitty_setup_termios()
 	kitty.kitty_hide_cursor()
-	-- self:poll_events()
+	self:poll_events()
 end
 
 function Flck:unmount()
 	-- drain kitty responses
-	-- self:poll_events()
+	self:poll_events()
 
 	-- restore cursor position then show cursor
 	kitty.kitty_show_cursor()
