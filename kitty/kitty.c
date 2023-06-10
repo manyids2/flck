@@ -7,6 +7,7 @@
 
 #include <alloca.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -23,10 +24,31 @@ struct pos {
   int x, y;
 };
 
+struct ksize {
+  int row, col, xpixel, ypixel;
+};
+
 typedef struct line line;
 typedef struct kdata kdata;
 typedef struct pos pos;
+typedef struct ksize ksize;
 typedef void (*key_cb)(int k);
+
+ksize kitty_get_size() {
+  struct winsize sz;
+  ioctl(0, TIOCGWINSZ, &sz);
+  /* printf("number of rows: %i, number of columns: %i, screen width: %i, screen
+   * " */
+  /*        "height: %i\n", */
+  /*        sz.ws_row, sz.ws_col, sz.ws_xpixel, sz.ws_ypixel); */
+  ksize ks = {sz.ws_row, sz.ws_col, sz.ws_xpixel, sz.ws_ypixel};
+  return ks;
+}
+
+void kitty_clear_screen(int lh) {
+  for (uint i = 0; i < lh; i++)
+    printf("\n");
+}
 
 line kitty_recv_term(int timeout) {
   line l = {0, {0}};

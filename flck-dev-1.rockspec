@@ -14,6 +14,8 @@ fzf-lua-cairo-kitty
 }
 dependencies = {
 	"lua >= 5.1, <= 5.4",
+	"middleclass",
+	"inspect",
 	"oocairo",
   "luv"
 }
