@@ -1,8 +1,9 @@
+local b64 = require("external.base64")
 local inspect = require("inspect")
 local class = require("middleclass")
 local Cairo = require("oocairo")
-
 local ffi = require("ffi")
+
 ffi.cdef([[
 
 typedef struct line {
@@ -32,6 +33,9 @@ void kitty_clear_screen(int lh);
 line kitty_recv_term(int timeout);
 kdata kitty_parse_response(line l);
 
+size_t kitty_send_rgba(int id, const char *color_pixels,
+                       int width, int height);
+
 ]])
 
 local kitty = ffi.load("./kitty.so")
@@ -49,6 +53,13 @@ function Flck:initialize()
 	self.keystroke = nil
 	self.pos = { x = 0, y = 0 }
 	self.exit = false
+	self.im_id = 1
+end
+
+function Flck:show_image(data)
+	local cdata = ffi.new("char[?]", #data + 1)
+	ffi.copy(cdata, data)
+	kitty.kitty_send_rgba(self.im_id, cdata, self.xpixel, self.ypixel)
 end
 
 function Flck:render()
@@ -60,13 +71,16 @@ function Flck:render()
 	local cr = Cairo.context_create(surface)
 
 	-- White background.
-	cr:set_source_rgb(1, 1, 1)
+	local grad = Cairo.pattern_create_linear(0, 0, self.xpixel, self.ypixel)
+	grad:add_color_stop_rgb(0, 1, 0, 0)
+	grad:add_color_stop_rgb(0.5, 0, 1, 0)
+	grad:add_color_stop_rgb(1, 0, 0, 1)
+	cr:set_source(grad)
 	cr:paint()
 
-	-- -- program writes the finished PNG file through a Lua filehandle.
-	-- local fh = assert(io.open("arc.png", "wb"))
-	-- surface:write_to_png(fh)
-	-- fh:close()
+	local data = surface:get_data()
+	self:show_image(data)
+
 	self.dirty = false
 end
 
@@ -85,18 +99,18 @@ function Flck:unmount()
 	kitty.kitty_set_position(self.pos.x, self.pos.y)
 	kitty.kitty_restore_termios()
 
-	-- kitty.kitty_clear_screen(self.row)
+	kitty.kitty_clear_screen(self.row)
 end
 
 function Flck:run()
 	for _ = 1, 10 do
-		self:render()
-		kitty.kitty_set_position(self.pos.x, self.pos.y - self.ypixel)
-		self:poll_events()
-
 		if self.exit then
 			break
 		end
+
+		self:render()
+		kitty.kitty_set_position(self.pos.x, self.pos.y - self.ypixel)
+		self:poll_events()
 	end
 end
 

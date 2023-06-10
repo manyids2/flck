@@ -176,3 +176,94 @@ void kitty_restore_termios() {
   /* restore termios */
   tcsetattr(0, TCSANOW, _get_termios_backup());
 }
+
+static const uint8_t base64enc_tab[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int base64_encode(size_t in_len, const char *in, size_t out_len,
+                         char *out) {
+  uint ii, io;
+  uint_least32_t v;
+  uint rem;
+
+  for (io = 0, ii = 0, v = 0, rem = 0; ii < in_len; ii++) {
+    uint8_t ch;
+    ch = in[ii];
+    v = (v << 8) | ch;
+    rem += 8;
+    while (rem >= 6) {
+      rem -= 6;
+      if (io >= out_len)
+        return -1; /* truncation is failure */
+      out[io++] = base64enc_tab[(v >> rem) & 63];
+    }
+  }
+  if (rem) {
+    v <<= (6 - rem);
+    if (io >= out_len)
+      return -1; /* truncation is failure */
+    out[io++] = base64enc_tab[v & 63];
+  }
+  while (io & 3) {
+    if (io >= out_len)
+      return -1; /* truncation is failure */
+    out[io++] = '=';
+  }
+  if (io >= out_len)
+    return -1; /* no room for null terminator */
+  out[io] = 0;
+  return io;
+}
+
+size_t kitty_send_rgba(int id, const char *color_pixels, int width,
+                       int height) {
+  const size_t chunk_limit = 4096;
+
+  size_t pixel_count = width * height;
+  size_t total_size = pixel_count << 2;
+
+  const char *encode_data;
+  size_t encode_size;
+
+  encode_data = color_pixels;
+  encode_size = total_size;
+
+  size_t base64_size = ((encode_size + 2) / 3) * 4;
+  char *base64_pixels = (char *)alloca(base64_size + 1);
+
+  /* base64 encode the data */
+  int ret = base64_encode(encode_size, encode_data, base64_size + 1,
+                          (char *)base64_pixels);
+  if (ret < 0) {
+    fprintf(stderr, "error: base64_encode failed: ret=%d\n", ret);
+    exit(1);
+  }
+
+  /*
+   * write kitty protocol RGBA image in chunks no greater than 4096 bytes
+   *
+   * <ESC>_Gf=32,s=<w>,v=<h>,m=1;<encoded pixel data first chunk><ESC>\
+   * <ESC>_Gm=1;<encoded pixel data second chunk><ESC>\
+   * <ESC>_Gm=0;<encoded pixel data last chunk><ESC>\
+   */
+
+  size_t sent_bytes = 0;
+  while (sent_bytes < base64_size) {
+    size_t chunk_size = base64_size - sent_bytes < chunk_limit
+                            ? base64_size - sent_bytes
+                            : chunk_limit;
+    int cont = !!(sent_bytes + chunk_size < base64_size);
+    if (sent_bytes == 0) {
+      fprintf(stdout, "\x1B_Gf=32,a=%s,i=%u,s=%d,v=%d,m=%d%s;", "T", id, width,
+              height, cont, "");
+    } else {
+      fprintf(stdout, "\x1B_Gm=%d;", cont);
+    }
+    fwrite(base64_pixels + sent_bytes, chunk_size, 1, stdout);
+    fprintf(stdout, "\x1B\\");
+    sent_bytes += chunk_size;
+  }
+  fflush(stdout);
+
+  return encode_size;
+}
